@@ -1,0 +1,4 @@
+name = "MCUCommon"
+uuid = "455ac959-662e-47bc-a1c5-e582af05f21d"
+authors = ["Sukera <Seelengrab@users.noreply.github.com>"]
+version = "0.1.0"
