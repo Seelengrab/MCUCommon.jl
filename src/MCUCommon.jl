@@ -74,12 +74,12 @@ function Base.setindex!(_::P, val::Bool) where {RName, RT <: Register{RName}, RR
     return volatile_store!(RR, cur)
 end
 
-# gracefullly stolen from VectorizationBase.jl
-
 """
     volatile_store!(r::Register{T}, v::T) -> Nothing
 
-Stores a value `T` in the register `r`. This call is not elided by LLVM.
+Stores a value `T` in the register `r`. `T` is expected to be from FieldFlags.jl.
+
+This call is not elided by LLVM.
 """
 function volatile_store! end
 
@@ -87,23 +87,11 @@ function volatile_store! end
   volatile_load(r::Register{T}) -> T
   volatile_load(p::Ptr{T}) -> T
 
-Loads a value of type `T` from the register `r`. This call is not elided by LLVM.
+Loads a value of type `T` from the register `r`. `T` is expected to be from FieldFlags.jl.
+
+This call is not elided by LLVM.
 """
 function volatile_load end
-
-"""
-    dataregister(::Register)
-
-Gives the data direction register for the given register.
-"""
-function dataregister end
-
-"""
-   datapin(::Pin)
-
-Gives the data direction pin for the given pin.
-"""
-datapin(::Pin{PT, Port, Bit}) where {PT, Port, Bit} = Pin{dataregister(Port), Bit}()
 
 """
     keep(x)
