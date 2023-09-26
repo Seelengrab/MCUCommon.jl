@@ -2,9 +2,7 @@ module MCUCommon
 
 using FieldFlags
 
-export Register, RegisterBits, Pin, volatile_load, volatile_store!,
-    keep, delay_ms, delay_us, delay, CPU_FREQUENCY_HZ, datapin,
-    dataregister, @pindefs
+export Register, Field, Pin, keep
 
 @enum Access Unknown=0 Read Write ReadWrite ReadWriteOnce
 const WriteableAccess = (Write, ReadWrite, ReadWriteOnce)
