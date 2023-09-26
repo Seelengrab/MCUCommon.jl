@@ -1,160 +1,87 @@
 module MCUCommon
 
+using FieldFlags
+
 export Register, RegisterBits, Pin, volatile_load, volatile_store!,
     keep, delay_ms, delay_us, delay, CPU_FREQUENCY_HZ, datapin,
     dataregister, @pindefs
 
 @enum Access Unknown=0 Read Write ReadWrite ReadWriteOnce
+const WriteableAccess = (Write, ReadWrite, ReadWriteOnce)
+const ReadableAccess = (Read, ReadWrite, ReadWriteOnce)
 
 """
-    Register{Reg, T <: Base.BitInteger}
+    Register{Reg, T}
 
-Represents a register named `Reg` (a `Symbol`), holding data in the size of `T`.
+Represents a register named `Reg` (a `Symbol`), holding data of type `T`, which is expected to be a bitfield from FieldFlags.jl.
 
 !!! warn "Internal fields"
     Internally, this is represented as a `Ptr{T}`, pointing to the memory mapped register at the given address.
     This is an implementation detail and may change at any time.
 """
-struct Register{Reg, T <: Base.BitInteger}
+struct Register{Reg, T}
     ptr::Ptr{T}
     Register{Reg, T}(x::Ptr) where {Reg, T} = new{Reg, T}(convert(Ptr{T}, x))
     Register{Reg, T}(x::Base.BitInteger) where {Reg, T} = new{Reg, T}(Ptr{T}(x % UInt)) # Ptr only takes Union{Int, UInt, Ptr}...
 end
 
 """
-   RegisterBits{Reg, T}
+    Field{Reg, Mode, Width, Name}
 
-Represents a bitmask and/or registerstate to be set/used. `Reg` and `T` designate the corresponding `Register{Reg, T}` these bits are for.
+Represents a field of a register.
 
-!!! note "Error paths"
-    This type relies on constant propagation to eliminate error paths.
-
-!!! warn "Internal fields"
-    The bits stored in this object are considered internal. Accessing them directly to construct equivalently set bits for a different
-    register is not supported.
+ * `RT`: The type of the register.
+ * `Reg`: The actual register object.
+ * `Mode`: The access mode of this field.
+ * `Width`: The width, in bits, of this field.
+ * `Name`: The name of the field.
 """
-struct RegisterBits{Reg, T}
-    bits::T
-end
-
-"""
-    Pin{Reg, bit}
-
-Represents the bit at position `bit` in the register `Reg`. `bit` is 1-based.
-`Reg` is the actual `Register` object, not its type.
-
-!!! note "Error paths"
-    This type relies on constant propagation to eliminate error paths, as well as for compile-time elimination of the entire object.
-    Instabilities in either type parameter will lead to runtime error paths being emitted.
-"""
-struct Pin{RT, Reg, Bit, Mask}
-    # RT   : The actual type of `Reg`
-    # Reg  : An actual register object, to allow setting just a single bit in isolation without keeping the register around in the source code
-    # Bit  : The i-th bit in `Reg`, 1-based
-    # Mask : The bitmask used on `Reg` to access this Pin. Constructed from `Bit`.
-    function Pin{Reg, Bit}() where {Reg, Bit}
-        Reg isa Register || throw(ArgumentError("`$Reg` is not a `Register` object!"))
-        T = typeof(Reg)
-        1 <= Bit <= 8*sizeof(eltype(T)) || throw(ArgumentError("Register `$Reg` only has `$(8*sizeof(eltype(T)))` bits, while bit `$Bit` was requested."))
-        mask = eltype(Reg)(1 << (Bit - 1))
-        new{T, Reg, Bit, mask}()
-    end
-end
-
-struct Field{RT, Reg, Mode, Offset, Width, Mask}
+struct Field{RT, Reg, Mode, Width, Name}
     # RT     : The actual type of `Reg`
-    # Reg    : An actual register object, to allow setting just a single bit in isolation without keeping the register around in the source code
+    # Reg    : An actual register object, to allow setting just a single field in isolation without keeping the register around in the source code
     # Offset : The offset of the field in the register
     # Width  : The width of the field in the register
-    function Field{Reg, Mode, Offset, Width}() where {Reg, Mode, Offset, Width}
+    function Field{Reg, Mode, Width, Name}() where {Reg, Mode, Name, Width}
         Reg isa Register || throw(ArgumentError("`$Reg is not a `Register` object!"))
-        Offset isa Integer || throw(ArgumentError("`$Offset` is not an integer!"))
-        Width isa Integer || throw(ArgumentError("`$Width` is not an integer!"))
         Mode isa Access || throw(ArgumentError("`$Mode` is not an access mode!"))
+        Name isa Symbol || throw(ArgumentError("`$Name` is not a `Symbol`!"))
+        Width isa Integer || throw(ArgumentError("`$Width` is not an integer!"))
         T = typeof(Reg)
-        1 <= (Offset + Width) <= 8*sizeof(eltype(T)) || throw(ArgumentError("Register `$Reg` only has `$(8*sizeof(eltype(T)))` bits, while Offset+Width = $Offset+$Width = $(Offset+Width) bits were requested."))
-        mask = ~(~zero(eltype(Reg)) << Width) << Offset
-        new{T, Reg, Mode, Offset, Width, mask}()
+        new{T, Reg, Mode, Width, Name}()
     end
 end
 
+const Pin{RT, Reg, Mode, Name} = Field{RT, Reg, Mode, 1, Name}
+
 Base.eltype(::Type{R}) where {Reg, T, R <: Register{Reg, T}} = T
-Base.zero(::Register{R, T}) where {R, T} = RegisterBits{R, T}(zero(T))
-Base.one(::Register{R, T}) where {R, T} = RegisterBits{R, T}(one(T))
 
-Base.getindex(r::Register) = volatile_load(r)
-Base.setindex!(r::Register{Reg, T}, data::T)                    where {Reg, T}          = volatile_store!(r, data)
-Base.setindex!(r::Register{Reg, T},   rb::RegisterBits{Reg, T}) where {Reg, T}          = volatile_store!(r, rb.bits)
-Base.setindex!(r::RT,                   ::Pin{RT, Reg, b, m})   where {RT, Reg, b, m}   = volatile_store!(r, m)
+function Base.getindex(r::Register)
+    volatile_load(r)
+end
+function Base.getindex(_::Field{RT, Reg, Mode, Width, Name}) where {RName, RT <: Register{RName}, Reg, Mode, Width, Name} 
+    Mode ∉ ReadableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not readable!"))
+    getproperty(volatile_load(Reg), Name)
+end
 
-######
-# logical operations with Pins & Registers
-######
+function Base.setindex!(r::RT, data::T) where {RT <: Register, RR, Mode, T <: Field{RT, RR, Mode}} 
+    Mode ∉ WriteableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not writeable!"))
+    volatile_store!(r, data)
+end
+function Base.setindex!(_::P, val::Bool) where {RName, RT <: Register{RName}, RR, Name, Mode, P <: Pin{RT, RR, Mode, Name}}
+    Mode ∉ WriteableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not writeable!"))
+    cur = volatile_load(RR)
 
-Base.:(|)(rba::RegisterBits{Reg, T}, rbb::RegisterBits{Reg, T}) where {Reg, T} = RegisterBits{Reg, T}(rba.bits | rbb.bits)
-Base.:(&)(rba::RegisterBits{Reg, T}, rbb::RegisterBits{Reg, T}) where {Reg, T} = RegisterBits{Reg, T}(rba.bits & rbb.bits)
-Base.:(⊻)(rba::RegisterBits{Reg, T}, rbb::RegisterBits{Reg, T}) where {Reg, T} = RegisterBits{Reg, T}(rba.bits ⊻ rbb.bits)
-Base.:(|)(rbb::RegisterBits{Reg, T}, v::T)                      where {Reg, T} = RegisterBits{Reg, T}(v | rbb.bits)
-Base.:(&)(rbb::RegisterBits{Reg, T}, v::T)                      where {Reg, T} = RegisterBits{Reg, T}(v & rbb.bits)
-Base.:(⊻)(rbb::RegisterBits{Reg, T}, v::T)                      where {Reg, T} = RegisterBits{Reg, T}(v ⊻ rbb.bits)
-Base.:(|)(v::T,                      rbb::RegisterBits{Reg, T}) where {Reg, T} = RegisterBits{Reg, T}(v | rbb.bits)
-Base.:(&)(v::T,                      rbb::RegisterBits{Reg, T}) where {Reg, T} = RegisterBits{Reg, T}(v & rbb.bits)
-Base.:(⊻)(v::T,                      rbb::RegisterBits{Reg, T}) where {Reg, T} = RegisterBits{Reg, T}(v ⊻ rbb.bits)
-Base.:(~)(rb::RegisterBits{Reg, T})                             where {Reg, T} = RegisterBits{Reg, T}(~rb.bits)
+    setproperty!(cur, Name, val)
 
-# RT is the type of the register this Pin is for
-# Reg is the register itself
-# bx is the Bit of the pin (one based)
-# mx is the bitmask to set/read that pin
-Base.:(|)(::Pin{RT, Reg, ba, ma},  ::Pin{RT, Reg, bb, mb}) where {R, T, RT <: Register{R, T}, Reg, ba, bb, ma, mb} = RegisterBits{R, T}(ma | mb)
-Base.:(&)(::Pin{RT, Reg, ba, ma},  ::Pin{RT, Reg, bb, mb}) where {R, T, RT <: Register{R, T}, Reg, ba, bb, ma, mb} = RegisterBits{R, T}(ma & mb)
-Base.:(|)(::Pin{RT, Reg, bb, mb}, v::T)                    where {R, T, RT <: Register{R, T}, Reg, bb, mb}         = RegisterBits{R, T}(v | mb)
-Base.:(&)(::Pin{RT, Reg, bb, mb}, v::T)                    where {R, T, RT <: Register{R, T}, Reg, bb, mb}         = RegisterBits{R, T}(v & mb)
-Base.:(|)(v::T,                    ::Pin{RT, Reg, bb, mb}) where {R, T, RT <: Register{R, T}, Reg, bb, mb}         = RegisterBits{R, T}(v | mb)
-Base.:(&)(v::T,                    ::Pin{RT, Reg, bb, mb}) where {R, T, RT <: Register{R, T}, Reg, bb, mb}         = RegisterBits{R, T}(v & mb)
-Base.:(~)(::Pin{RT, Reg, ba, ma})                          where {R, T, RT <: Register{R, T}, Reg, ba, ma}         = RegisterBits{R, T}(~ma)
-
-Base.:(|)(p::Pin,                 rb::RegisterBits)                                                  = rb | p
-Base.:(&)(p::Pin,                 rb::RegisterBits)                                                  = rb & p
-Base.:(|)(rb::RegisterBits{R, T},   ::Pin{RT, Reg, b, m}) where {R, T, RT<:Register{R,T}, Reg, b, m} = RegisterBits{R, T}(rb.bits | m)
-Base.:(&)(rb::RegisterBits{R, T},   ::Pin{RT, Reg, b, m}) where {R, T, RT<:Register{R,T}, Reg, b, m} = RegisterBits{R, T}(rb.bits & m)
-
-Base.getindex(_::Pin{RT, Reg, b, m}) where {RT, Reg, b, m} = (volatile_load(Reg) & m) != zero(m)
-function Base.setindex!(_::Pin{Register{R, T}, Reg, b, m}, val::Bool) where {R, T, Reg, b, m}
-    cur = volatile_load(Reg)
-
-    res = ifelse(val, cur | m, cur & ~m)
-
-    return volatile_store!(Reg, res)
+    return volatile_store!(RR, cur)
 end
 
 # gracefullly stolen from VectorizationBase.jl
-const LLVM_TYPES = IdDict{Type{<:Union{Bool,Base.HWReal,Float16}},String}(
-  Float16 => "half",
-  Float32 => "float",
-  Float64 => "double",
-  # Bit => "i1", # I don't think we have these here?
-  Bool => "i8",
-  Int8 => "i8",
-  UInt8 => "i8",
-  Int16 => "i16",
-  UInt16 => "i16",
-  Int32 => "i32",
-  UInt32 => "i32",
-  Int64 => "i64",
-  UInt64 => "i64"
-  # Int128 => "i128", # let's not worry about these
-  # UInt128 => "i128",
-  # UInt256 => "i256",
-  # UInt512 => "i512",
-  # UInt1024 => "i1024",
-)
 
 """
     volatile_store!(r::Register{T}, v::T) -> Nothing
-    volatile_store!(p::Ptr{T}, v::T) -> Nothing
 
-Stores a value `T` in the register/pointer `r`/`p`. Unlike `unsafe_store!`, is not elided by LLVM.
+Stores a value `T` in the register `r`. This call is not elided by LLVM.
 """
 function volatile_store! end
 
@@ -162,7 +89,7 @@ function volatile_store! end
   volatile_load(r::Register{T}) -> T
   volatile_load(p::Ptr{T}) -> T
 
-Loads a value of type `T` from the register/ptr `r`/`p`. Unlike `unsafe_load`, is not elided by LLVM.
+Loads a value of type `T` from the register `r`. This call is not elided by LLVM.
 """
 function volatile_load end
 
@@ -188,92 +115,104 @@ which makes this a no-op in the final assembly.
 """
 function keep end
 
-Base.@assume_effects :nothrow :terminates_globally volatile_store!(x::Register{Reg, T}, v::T) where {Reg, T} = volatile_store!(x.ptr, v)
-Base.@assume_effects :nothrow :terminates_globally volatile_load(x::Register) = volatile_load(x.ptr)
-
-for T in keys(LLVM_TYPES)
-    ptrs = LLVM_TYPES[T]
+Base.@assume_effects :nothrow :terminates_globally @generated function volatile_store!(x::Register{Reg,T}, v::T) where {Reg,T}
+    ptrs = 8*sizeof(T)
+    inner_type = fieldtype(T, 1)
     store = """
-          %ptr = inttoptr i64 %0 to $ptrs*
-          store volatile $ptrs %1, $ptrs* %ptr, align 1
+          %ptr = inttoptr i64 %0 to i$ptrs*
+          store volatile i$ptrs %1, i$ptrs* %ptr, align 1
           ret void
           """
-    vs = :(function volatile_store!(x::Ptr{$T}, v::$T)
-        @inline
-        return Base.llvmcall(
-            $store,
-            Cvoid,
-            Tuple{Ptr{$T},$T},
-            x,
-            v
-        )
-    end)
+    :(return Base.llvmcall(
+        $store,
+        Cvoid,
+        Tuple{Ptr{$T},$inner_type},
+        x.ptr,
+        getfield(v, :fields)
+    ))
+end
+
+Base.@assume_effects :nothrow :terminates_globally @generated function volatile_load(x::Register{Reg,T}) where {Reg,T}
+    ptrs = 8*sizeof(T)
+    inner_type = fieldtype(T, 1)
     load = """
-           %ptr = inttoptr i64 %0 to $ptrs*
-           %val = load volatile $ptrs, $ptrs* %ptr, align 1
-           ret $ptrs %val
+           %ptr = inttoptr i64 %0 to i$ptrs*
+           %val = load volatile i$ptrs, i$ptrs* %ptr, align 1
+           ret i$ptrs %val
            """
-    ld = :(function volatile_load(x::Ptr{$T})
-        @inline
-        return Base.llvmcall(
-            $load,
-            $T,
-            Tuple{Ptr{$T}},
-            x
-        )
-    end)
-    @eval $vs
-    @eval $ld
+   :(return $T(Base.llvmcall(
+        $load,
+        $inner_type,
+        Tuple{Ptr{$T}},
+        x.ptr
+    )))
+end
 
+@generated function keep(x::T) where T
+    ptrs = 8*sizeof(T)
     str = """
-          call void asm sideeffect "", "X,~{memory}"($ptrs %0)
+          call void asm sideeffect "", "X,~{memory}"(i$ptrs %0)
           ret void
           """
-    k = :(function keep(x::$T)
-        @inline
-        return Base.llvmcall(
-            $str,
-            Cvoid,
-            Tuple{$T},
-            x
-    )
-    end)
-    @eval $k
+    :(return Base.llvmcall(
+        $str,
+        Cvoid,
+        Tuple{$T},
+        x
+    ))
 end
 
-macro pindefs(name::Symbol, pins::Expr)
-    pindefs(name, pins)
-end
+macro regdef(block::Expr)
+    block.head === :struct || throw(ArgumentError("Not a valid register definition!"))
+    filter!(x -> !(x isa LineNumberNode), block.args[3].args) # just to make definitions easier
+    !(block.args[2] isa Expr) && throw(ArgumentError("Not a valid register definition - missing address for Register!"))
+    regname = block.args[2].args[1]
+    regaddr = block.args[2].args[2]
+    regfieldname = Symbol(regname, :Fields)
 
-macro pindefs(reg::Symbol, name::Symbol, N::Int)
-    expr = Expr(:block)
-    expr.args = [ Symbol(name, i) for i in 0:N-1 ]
-    pindefs(reg, expr)
-end
-
-function pindefs(name::Symbol, pins::Expr)
-    pins.head !== :block && throw(ArgumentError("Given expression is not a block!"))
-    res = Expr(:block)
-    bit = 1
-    nesc = esc(name)
-    for e in pins.args
-        e isa LineNumberNode && continue
-        if e isa Symbol
-            e_esc = esc(e)
-            e != :_ && push!(res.args, :(const $e_esc = Pin{$nesc, $bit}()))
-            bit += 1
-        elseif (e isa Expr && e.head === :call
-                && length(e.args) == 3
-                && e.args[1] === Symbol(":")
-                && e.args[2] === :_
-                && e.args[3] isa Int)
-            # intentional padding/reserved
-            bit += e.args[3]
-        else
-            throw(ArgumentError("Invalid subexpression: `$e`"))
+    bitfieldexpr = deepcopy(block)
+    bitfieldexpr.args[2] = regfieldname
+    bitfieldfields = bitfieldexpr.args[3].args
+    map(eachindex(bitfieldfields)) do i
+        field = bitfieldfields[i].args[3]
+        if field isa Expr
+            # drop the access mode, if it exists
+            bitfieldfields[i].args[3] = field.args[1]
+        elseif !(field isa Integer)
+            throw(ArgumentError("Not a valid register definition!"))
         end
     end
-    res
+    # let FieldFlags.jl handle the struct creation
+    bitfield = FieldFlags.bitfield(bitfieldexpr)
+
+    # now onto the individual register/pin definitions
+    regdef = :(const $(esc(regname)) = Register{$(QuoteNode(regname)), $(esc(regfieldname))}($regaddr))
+
+    fields = Expr(:block)
+    for field in block.args[3].args
+        fieldname = field.args[2]
+        # support explicit placeholders
+        fieldname === :_ && continue
+        mode_size = field.args[3]
+        if mode_size isa Integer
+            fieldsize = mode_size
+            fieldmode = :ReadWrite
+        elseif mode_size isa Expr
+            fieldsize = mode_size.args[1]
+            fieldmode = mode_size.args[2]
+        else
+            throw(ArgumentError("Malformed register definition!"))
+        end
+        escname = esc(fieldname)
+        fielddef = :(const $escname = Field{$(esc(regname)),$fieldmode,$fieldsize,$(QuoteNode(fieldname))}())
+        push!(fields.args, fielddef)
+    end
+
+    return :(
+        $bitfield;
+        $regdef;
+        $fields
+    )
 end
 
 end # module MCUCommon
