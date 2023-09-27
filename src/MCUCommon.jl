@@ -53,21 +53,29 @@ const Pin{RT, Reg, Mode, Name} = Field{RT, Reg, Mode, 1, Name}
 
 Base.eltype(::Type{R}) where {Reg, T, R <: Register{Reg, T}} = T
 
-function Base.getindex(r::Register)
-    volatile_load(r)
-end
+# load an entire register
+Base.getindex(r::Register) = volatile_load(r)
+
+# load a single field
 function Base.getindex(_::Field{RT, Reg, Mode, Width, Name}) where {RName, RT <: Register{RName}, Reg, Mode, Width, Name} 
     Mode ∉ ReadableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not readable!"))
     getproperty(volatile_load(Reg), Name)
 end
 
-function Base.setindex!(r::RT, data::T) where {RT <: Register, RR, Mode, T <: Field{RT, RR, Mode}} 
+# write an entire register with precise preset data
+Base.setindex!(r::RT, data::ElType) where {RName, ElType, RT <: Register{RName,ElType}} = volatile_store!(r, data)
+
+# write a single field
+function Base.setindex!(_::F, val) where {RName, RT <: Register{RName}, RR, Mode, F <: Field{RT, RR, Mode}}
     Mode ∉ WriteableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not writeable!"))
-    volatile_store!(r, data)
-end
-function Base.setindex!(_::P, val::Bool) where {RName, RT <: Register{RName}, RR, Name, Mode, P <: Pin{RT, RR, Mode, Name}}
-    Mode ∉ WriteableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not writeable!"))
-    cur = volatile_load(RR)
+    if length(propertynames(eltype(RT))) == 1
+        # The register only has one field, so we can safely ignore it since this call will end up overwriting it
+        # This is important for cases like USART, where you want to write the entire register without reading it first
+        cur = zero(eltype(RT))
+    else
+        # something may be overwritten, so load first
+        cur = volatile_load(RR)
+    end
 
     setproperty!(cur, Name, val)
 
