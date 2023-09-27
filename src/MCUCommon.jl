@@ -182,6 +182,7 @@ macro regdef(block::Expr)
     regfieldname = Symbol(regname, :Fields)
 
     bitfieldexpr = deepcopy(block)
+    bitfieldexpr.args[1] = true
     bitfieldexpr.args[2] = regfieldname
     bitfieldfields = bitfieldexpr.args[3].args
     map(eachindex(bitfieldfields)) do i
