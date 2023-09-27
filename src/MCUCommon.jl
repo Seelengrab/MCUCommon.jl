@@ -156,6 +156,23 @@ end
     ))
 end
 
+"""
+    @regdef struct Name(Address)
+        FieldA:Size[::AccessMode]
+    end
+
+Define a new register `Name`, retrievable at `Address` (an integer literal designating an address). The fields of the register
+are defined as the "fields" of the struct expression, with a size and access mode (one of [`Read`](@ref Read), [`Write`](@ref Write), [`ReadWrite`](@ref ReadWrite) or [`ReadWriteOnce`](@ref ReadWriteOnce)).
+If the access mode is omitted, a default of [`ReadWrite`](@ref ReadWrite) is assumed. `Size` designates the length, in bits, of the field. Fields are arranged in the order they are written.
+
+It is also possible to specify any number of reserved/empty/padding, unnamed fields, by giving the field the name `_`.
+
+!!! warn "Register Size & Padding"
+    Due to a limitation of the compilation process, any register definition has a bitlength of a multiple of 8 bits.
+    For example, a register with a field of length 7 will still have a size of 8 bits, though the last bit is not retrievable.
+    Similarly, for a register with fields of length 3, 5 and 4 (equaling 11 bits), the total size would be 12 bits. Make sure
+    the specify any remaining padding, e.g. if the datasheet specifies a length of 16 bits for the register.
+"""
 macro regdef(block::Expr)
     block.head === :struct || throw(ArgumentError("Not a valid register definition!"))
     filter!(x -> !(x isa LineNumberNode), block.args[3].args) # just to make definitions easier
