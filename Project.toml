@@ -7,5 +7,5 @@ version = "0.1.2"
 FieldFlags = "3debba03-e216-4816-844a-cb4454e272d5"
 
 [compat]
-FieldFlags = "0.3.10"
+FieldFlags = "0.3.11"
 julia = "1.10"

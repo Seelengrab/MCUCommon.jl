@@ -66,9 +66,9 @@ end
 Base.setindex!(r::RT, data::ElType) where {RName, ElType, RT <: Register{RName,ElType}} = volatile_store!(r, data)
 
 # write a single field
-function Base.setindex!(_::F, val) where {RName, RT <: Register{RName}, RR, Mode, F <: Field{RT, RR, Mode}}
+function Base.setindex!(_::F, val::T) where {RName, RT <: Register{RName}, RR, Mode, Width, Name, F <: Field{RT, RR, Mode, Width, Name}, T}
     Mode ∉ WriteableAccess && throw(ArgumentError("Field `$Name` of register `$RName` is not writeable!"))
-    if length(propertynames(eltype(RT))) == 1
+    if length(FieldFlags.bitfieldnames(eltype(RT))) == 1
         # The register only has one field, so we can safely ignore it since this call will end up overwriting it
         # This is important for cases like USART, where you want to write the entire register without reading it first
         cur = zero(eltype(RT))
@@ -178,7 +178,7 @@ macro regdef(block::Expr)
     filter!(x -> !(x isa LineNumberNode), block.args[3].args) # just to make definitions easier
     !(block.args[2] isa Expr) && throw(ArgumentError("Not a valid register definition - missing address for Register!"))
     regname = block.args[2].args[1]
-    regaddr = block.args[2].args[2]
+    regaddr = esc(block.args[2].args[2])
     regfieldname = Symbol(regname, :Fields)
 
     bitfieldexpr = deepcopy(block)
