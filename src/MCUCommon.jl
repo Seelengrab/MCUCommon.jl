@@ -4,7 +4,7 @@ using FieldFlags
 
 export Register, Field, Pin, keep
 
-@enum Access Unknown=0 Read Write ReadWrite ReadWriteOnce
+@enum Access Unknown=0 Read Write ReadWrite WriteOnce ReadWriteOnce
 const WriteableAccess = (Write, ReadWrite, ReadWriteOnce)
 const ReadableAccess = (Read, ReadWrite, ReadWriteOnce)
 
