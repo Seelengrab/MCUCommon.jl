@@ -24,6 +24,21 @@ struct Register{Reg, T}
 end
 
 """
+    RemoteRegister{Reg, T}(ptr)
+
+Represents a register on a remote peripheral, located at address `ptr` on that peripheral.
+`T` is expected to be a bitfield from FieldFlags.jl.
+
+This register is NOT directly loadable through a memory load! The type is mostly intended to give a path to
+dispatch on.
+"""
+struct RemoteRegister{Reg, T}
+    ptr::Ptr{T}
+    Register{Reg, T}(x::Ptr) where {Reg, T} = new{Reg, T}(convert(Ptr{T}, x))
+    Register{Reg, T}(x::Base.BitInteger) where {Reg, T} = new{Reg, T}(Ptr{T}(x % UInt)) # Ptr only takes Union{Int, UInt, Ptr}...
+end
+
+"""
     Field{Reg, Mode, Width, Name}
 
 Represents a field of a register.
@@ -161,7 +176,7 @@ end
         FieldA:Size[::AccessMode]
     end
 
-Define a new register `Name`, retrievable at `Address` (an integer literal designating an address). The fields of the register
+Define a new local register `Name`, retrievable at `Address` (an integer literal designating an address). The fields of the register
 are defined as the "fields" of the struct expression, with a size and access mode (one of [`Read`](@ref Read), [`Write`](@ref Write), [`ReadWrite`](@ref ReadWrite) or [`ReadWriteOnce`](@ref ReadWriteOnce)).
 If the access mode is omitted, a default of [`ReadWrite`](@ref ReadWrite) is assumed. `Size` designates the length, in bits, of the field. Fields are arranged in the order they are written.
 
@@ -182,10 +197,10 @@ macro regdef(block::Expr)
     regfieldname = Symbol(regname, :Fields)
 
     bitfieldexpr = deepcopy(block)
-    bitfieldexpr.args[1] = true
+    bitfieldexpr.args[1] = true # the bitfield itself is always mutable
     bitfieldexpr.args[2] = regfieldname
     bitfieldfields = bitfieldexpr.args[3].args
-    map(eachindex(bitfieldfields)) do i
+    foreach(eachindex(bitfieldfields)) do i
         field = bitfieldfields[i].args[3]
         if field isa Expr
             # drop the access mode, if it exists
@@ -224,6 +239,54 @@ macro regdef(block::Expr)
         $bitfield;
         $regdef;
         $fields
+    )
+end
+
+"""
+    @remotereg struct Name(Address)
+        FieldA:Size
+    end
+
+Define a remote register `Name`, located at `Address` in the remote peripheral with one or more fields named
+`FieldA` with size `Size` (an integer literal).
+
+The register is NOT directly loadable/retrievable; define appropriate functions to communicate with your peripheral instead.
+
+It is also possible to specify any number of reserved/empty/padding, unnamed fields, by giving the field the name `_`.
+
+!!! warn "Register Size & Padding"
+    Due to a limitation of the compilation process, any register definition has a bitlength of a multiple of 8 bits.
+    For example, a register with a field of length 7 will still have a size of 8 bits, though the last bit is not retrievable.
+    Similarly, for a register with fields of length 3, 5 and 4 (equaling 11 bits), the total size would be 12 bits. Make sure
+    the specify any remaining padding, e.g. if the datasheet specifies a length of 16 bits for the register.
+for"""
+macro remotereg(block::Expr)
+    block.head === :struct || throw(ArgumentError("Not a valid register definition!"))
+    filter!(x -> !(x isa LineNumberNode), block.args[3].args) # just to make definitions easier
+    !(block.args[2] isa Expr) && throw(ArgumentError("Not a valid register definition - missing address for Register!"))
+    regname = block.args[2].args[1]
+    regaddr = esc(block.args[2].args[2])
+    regfieldname = Symbol(regname, :Fields)
+
+    # the bits are always mutable
+    block.args[1] = true
+    block.args[2] = regfieldname
+    bitfieldfields = block.args[3].args
+    foreach(eachindex(bitfieldfields)) do i
+        field = bitfieldfields[i].args[3]
+        if !(field isa Integer)
+            throw(ArgumentError("Not a valid register definition!"))
+        end
+    end
+    # let FieldFlags.jl handle the struct creation
+    bitfield = FieldFlags.bitfield(block)
+
+    # now onto the individual register/pin definitions
+    regdef = :(const $(esc(regname)) = RemoteRegister{$(QuoteNode(regname)), $(esc(regfieldname))}($regaddr))
+
+    return :(
+        $bitfield;
+        $regdef
     )
 end
 
