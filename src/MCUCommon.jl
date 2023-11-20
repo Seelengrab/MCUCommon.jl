@@ -214,6 +214,7 @@ macro regdef(block::Expr)
 
     # now onto the individual register/pin definitions
     regdef = :(const $(esc(regname)) = Register{$(QuoteNode(regname)), $(esc(regfieldname))}($regaddr))
+    zerodef = :($Base.zero(::Type{Register{$(QuoteNode(regname)), $(esc(regfieldname))}}) = $Base.zero($(esc(regfieldname))))
 
     fields = Expr(:block)
     for field in block.args[3].args
@@ -238,6 +239,7 @@ macro regdef(block::Expr)
     return :(
         $bitfield;
         $regdef;
+        $zerodef;
         $fields
     )
 end
